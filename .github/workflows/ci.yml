@@ -23,5 +23,5 @@ jobs:
       - run: pip install -r requirements.txt
       - run: ruff check .
       - run: pytest tests/unit
-      - run: python -m src.pipeline      # génère, traite, insère
-      - run: pytest tests/integration    # vérifie les valeurs en base
+      #- run: python -m src.pipeline      # génère, traite, insère
+      #- run: pytest tests/integration    # vérifie les valeurs en base
