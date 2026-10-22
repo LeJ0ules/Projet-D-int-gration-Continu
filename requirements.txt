@@ -1,0 +1,4 @@
+# Étape 0 : uniquement les outils de qualité.
+# On ajoutera pandas, sqlalchemy, psycopg, boto3, tenacity au fil des étapes.
+pytest==8.3.3
+ruff==0.7.4
