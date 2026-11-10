@@ -1,9 +1,14 @@
 name: CI
-on: [push, pull_request]
+
+on:
+  push:
+  pull_request:
 
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    # Conteneur Postgres démarré à côté du job, accessible sur localhost:5432.
     services:
       postgres:
         image: postgres:16
@@ -11,17 +16,39 @@ jobs:
           POSTGRES_PASSWORD: test
           POSTGRES_DB: pipeline
         ports: ["5432:5432"]
+        # Le job attend que Postgres soit prêt avant de commencer.
         options: >-
           --health-cmd "pg_isready -U postgres"
-          --health-interval 5s --health-retries 10
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
       DATABASE_URL: postgresql://postgres:test@localhost:5432/pipeline
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install -r requirements.txt
-      - run: ruff check .
-      - run: pytest tests/unit
-      #- run: python -m src.pipeline      # génère, traite, insère
-      #- run: pytest tests/integration    # vérifie les valeurs en base
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Installer les dépendances
+        run: pip install -r requirements.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Tests unitaires
+        run: pytest tests/unit
+
+      - name: Lancer la pipeline (génération, traitement, insertion)
+        run: python -m src.pipeline
+
+      # Étape 5 :
+      # - name: Tests d'intégration
+      #   run: pytest tests/integration
+
+      - name: Build de l'image Docker
+        run: docker build -t data-pipeline:ci .
