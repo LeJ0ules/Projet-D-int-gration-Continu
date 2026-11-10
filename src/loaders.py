@@ -1,5 +1,6 @@
 """Chargement des données (I/O). Aucune logique métier ici."""
 import csv
+import hashlib
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -22,3 +23,12 @@ def load_transactions(path: Path) -> list[Transaction]:
             )
             for row in csv.DictReader(f)
         ]
+
+
+def file_sha256(path: Path) -> str:
+    """Empreinte SHA-256 du contenu du fichier : sert à repérer un fichier déjà traité."""
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
