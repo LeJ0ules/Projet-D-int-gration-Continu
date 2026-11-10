@@ -40,8 +40,9 @@ def sum_received_by_iban(transactions: Iterable[Transaction]) -> dict[str, Decim
 def flag_transactions(
     transactions: Iterable[Transaction], threshold: Decimal = FLAG_THRESHOLD
 ) -> list[Transaction]:
-    """Renvoie de nouvelles transactions, `flagged=True` si montant > seuil (strict)."""
-    return [replace(t, flagged=t.montant_eur > threshold) for t in transactions]
+    #"""Renvoie de nouvelles transactions, `flagged=True` si montant > seuil (strict)."""
+    """Renvoie de nouvelles transactions, `flagged=True` si montant >= seuil."""
+    return [replace(t, flagged=t.montant_eur >= threshold) for t in transactions]
 
 
 @dataclass(frozen=True)
