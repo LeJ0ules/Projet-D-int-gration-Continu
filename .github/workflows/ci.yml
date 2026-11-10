@@ -46,9 +46,8 @@ jobs:
       - name: Lancer la pipeline (génération, traitement, insertion)
         run: python -m src.pipeline
 
-      # Étape 5 :
-      # - name: Tests d'intégration
-      #   run: pytest tests/integration
+      - name: Tests d'intégration (valeurs en base)
+        run: pytest tests/integration
 
       - name: Build de l'image Docker
         run: docker build -t data-pipeline:ci .

@@ -21,3 +21,8 @@ docker run -d \
 export DATABASE_URL=postgresql://postgres:test@localhost:5433/pipeline
 python3 -m src.pipeline
 python3 -m src.pipeline
+
+
+
+test integration : 
+pytest tests/integration
