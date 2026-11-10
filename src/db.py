@@ -1,9 +1,19 @@
 """Accès à la base PostgreSQL (I/O). Aucune logique de calcul ici."""
+import logging
 from pathlib import Path
 
 import psycopg
+from tenacity import (
+    Retrying,
+    before_sleep_log,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from src.transforms import ProcessingResult
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
@@ -83,3 +93,34 @@ def _insert_all(
                     f"INSERT INTO {table} (file_hash, {column}, total_eur) VALUES (%s, %s, %s)",
                     [(file_hash, key, total) for key, total in totals.items()],
                 )
+
+
+def insert_result_with_retry(
+    database_url: str,
+    file_hash: str,
+    file_name: str,
+    result: ProcessingResult,
+    *,
+    attempts: int = 3,
+    wait_seconds: float = 1.0,
+) -> None:
+    """Comme insert_result, mais réessaie si la base est momentanément indisponible.
+
+    - On ne réessaie QUE sur psycopg.OperationalError (connexion coupée, base qui
+      redémarre...). Une autre erreur (ex. UniqueViolation = fichier déjà traité)
+      n'est pas "transitoire" : la réessayer ne changerait rien.
+    - Attente exponentielle entre les essais : wait_seconds, puis x2, puis x4...
+    - Chaque essai ouvre une NOUVELLE connexion (l'ancienne peut être cassée).
+    - Le retry est sans danger : insert_result est tout-ou-rien, et le hash en base
+      empêche d'enregistrer deux fois le même fichier.
+    """
+    retrying = Retrying(
+        retry=retry_if_exception_type(psycopg.OperationalError),
+        stop=stop_after_attempt(attempts),
+        wait=wait_exponential(multiplier=wait_seconds, max=30),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,  # après le dernier échec, on relève l'erreur d'origine
+    )
+    for attempt in retrying:
+        with attempt, connect(database_url) as conn:
+            insert_result(conn, file_hash, file_name, result)
