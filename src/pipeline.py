@@ -3,6 +3,7 @@
 Ce fichier ne contient pas de logique métier : il enchaîne les briques
 (generate -> s3 -> loaders -> transforms -> db) dans le bon ordre.
 """
+import argparse
 import logging
 import os
 import tempfile
@@ -17,6 +18,11 @@ from src.generate import generate_all
 from src.loaders import parse_transactions, sha256_bytes
 from src.s3 import PREFIX, S3Settings
 from src.transforms import process
+
+# "all"     : génère + dépose dans S3 + traite (CI, démo locale)
+# "seed"    : génère + dépose dans S3 seulement (simule l'arrivée de fichiers)
+# "process" : traite seulement ce qui est déjà dans S3 (production : le CronJob)
+MODES = ("all", "seed", "process")
 
 
 @dataclass
@@ -67,21 +73,30 @@ def run(
     database_url: str,
     s3_settings: S3Settings,
     *,
+    mode: str = "all",
     attempts: int = 3,
     wait_seconds: float = 1.0,
 ) -> RunSummary:
+    if mode not in MODES:
+        raise ValueError(f"mode inconnu : {mode!r} (attendu : {', '.join(MODES)})")
     retry = {"attempts": attempts, "wait_seconds": wait_seconds}
     client = s3.make_client(s3_settings)
     s3.ensure_bucket(client, s3_settings.bucket, **retry)
-    upload_generated_files(client, s3_settings.bucket, **retry)
+    if mode in ("all", "seed"):
+        upload_generated_files(client, s3_settings.bucket, **retry)
+    if mode == "seed":
+        return RunSummary()
     with db.connect(database_url) as conn:
         db.init_schema(conn)
     return process_bucket(database_url, client, s3_settings.bucket, **retry)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    summary = run(os.environ["DATABASE_URL"], S3Settings.from_env())
+    parser = argparse.ArgumentParser(description="Pipeline CSV -> S3 -> PostgreSQL.")
+    parser.add_argument("--mode", choices=MODES, default="all")
+    args = parser.parse_args(argv)
+    summary = run(os.environ["DATABASE_URL"], S3Settings.from_env(), mode=args.mode)
     print(f"traités : {summary.processed}")
     print(f"ignorés (déjà traités) : {summary.skipped}")
 

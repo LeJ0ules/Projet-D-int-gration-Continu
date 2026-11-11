@@ -53,7 +53,7 @@ jobs:
           echo '{"identities":[{"name":"ci","credentials":[{"accessKey":"testkey","secretKey":"testsecret"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' > s3config.json
           docker run -d --name seaweedfs -p 8333:8333 \
             -v "$PWD/s3config.json:/etc/seaweedfs/s3config.json:ro" \
-            chrislusf/seaweedfs:latest \
+            chrislusf/seaweedfs:4.53 \
             mini -dir=/data -s3.config=/etc/seaweedfs/s3config.json -bucket=transactions
           for i in $(seq 1 60); do
             curl -s -o /dev/null http://localhost:8333 && echo "S3 prêt" && exit 0

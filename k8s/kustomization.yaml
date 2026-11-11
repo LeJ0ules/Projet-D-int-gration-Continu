@@ -1,0 +1,9 @@
+# `kubectl apply -k k8s/` applique tout d'un coup, dans le namespace data-pipeline.
+# Les Secrets (mots de passe) ne sont PAS dans le repo : le workflow CD les crée.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: data-pipeline
+resources:
+  - postgres.yaml
+  - seaweedfs.yaml
+  - cronjob.yaml

@@ -1,0 +1,106 @@
+name: CD
+
+# Se déclenche quand la CI est verte sur main (ou à la main : bouton "Run workflow").
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write   # nécessaire pour publier l'image sur ghcr.io
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    env:
+      NS: data-pipeline
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+
+      - name: Construire l'image Docker
+        run: docker build -t data-pipeline:deploy .
+
+      - name: Créer un cluster Kubernetes (kind)
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: data-pipeline
+
+      # Le cluster est éphémère : on charge l'image directement dedans (pas besoin de registre).
+      - name: Charger l'image dans le cluster
+        run: kind load docker-image data-pipeline:deploy --name data-pipeline
+
+      - name: Créer le namespace et les secrets
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          # Identifiants aléatoires, générés à chaque déploiement : rien n'est écrit dans le repo.
+          PG_PASS=$(openssl rand -hex 16)
+          S3_KEY=$(openssl rand -hex 8)
+          S3_SECRET=$(openssl rand -hex 16)
+          echo "::add-mask::$PG_PASS"
+          echo "::add-mask::$S3_KEY"
+          echo "::add-mask::$S3_SECRET"
+          kubectl -n "$NS" create secret generic pipeline-secrets \
+            --from-literal=POSTGRES_PASSWORD="$PG_PASS" \
+            --from-literal=S3_ACCESS_KEY="$S3_KEY" \
+            --from-literal=S3_SECRET_KEY="$S3_SECRET"
+          printf '{"identities":[{"name":"pipeline","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' \
+            "$S3_KEY" "$S3_SECRET" > s3config.json
+          kubectl -n "$NS" create secret generic seaweedfs-s3-config --from-file=s3config.json=s3config.json
+          rm s3config.json
+
+      - name: Déployer S3, base de données et CronJob
+        run: |
+          kubectl apply -k k8s/
+          kubectl -n "$NS" rollout status statefulset/postgres --timeout=180s
+          kubectl -n "$NS" rollout status statefulset/seaweedfs --timeout=180s
+
+      - name: Déposer des fichiers dans S3 (job seed)
+        run: |
+          kubectl -n "$NS" apply -f k8s/demo/seed-job.yaml
+          kubectl -n "$NS" wait --for=condition=complete job/pipeline-seed --timeout=180s
+
+      - name: Vérifier le traitement (CronJob lancé à la main, deux fois)
+        run: |
+          set -euo pipefail
+          count() {
+            kubectl -n "$NS" exec postgres-0 -- psql -U postgres -d pipeline -tAc "SELECT count(*) FROM transactions"
+          }
+
+          kubectl -n "$NS" create job --from=cronjob/pipeline-process run-1
+          kubectl -n "$NS" wait --for=condition=complete job/run-1 --timeout=180s
+          kubectl -n "$NS" logs job/run-1
+          echo "transactions en base : $(count)"
+          test "$(count)" = "12"
+
+          # 2e exécution : les fichiers sont déjà traités, rien ne doit être retraité.
+          kubectl -n "$NS" create job --from=cronjob/pipeline-process run-2
+          kubectl -n "$NS" wait --for=condition=complete job/run-2 --timeout=180s
+          kubectl -n "$NS" logs job/run-2 | tee run-2.log
+          grep -F "traités : []" run-2.log
+          test "$(count)" = "12"
+
+      - name: Diagnostic en cas d'échec
+        if: failure()
+        run: |
+          kubectl -n "$NS" get all,pvc || true
+          kubectl -n "$NS" describe pods || true
+          for p in $(kubectl -n "$NS" get pods -o name); do
+            echo "=== $p ==="; kubectl -n "$NS" logs "$p" --all-containers --tail=80 || true
+          done
+
+      # On ne publie l'image qu'une fois le déploiement VÉRIFIÉ.
+      - name: Publier l'image sur GHCR
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag data-pipeline:deploy "$IMAGE:${SHA::7}"
+          docker tag data-pipeline:deploy "$IMAGE:latest"
+          docker push "$IMAGE:${SHA::7}"
+          docker push "$IMAGE:latest"

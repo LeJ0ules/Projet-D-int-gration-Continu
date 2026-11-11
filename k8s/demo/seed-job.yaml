@@ -1,0 +1,40 @@
+# Job ponctuel : dépose des CSV de test dans S3 (simule l'arrivée de fichiers).
+# Volontairement hors de kustomization.yaml : ce n'est pas du "production".
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pipeline-seed
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: pipeline
+          image: data-pipeline:deploy
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "src.pipeline", "--mode", "seed"]
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pipeline-secrets
+                  key: POSTGRES_PASSWORD
+            # $(POSTGRES_PASSWORD) : Kubernetes remplace par la variable définie juste au-dessus.
+            - name: DATABASE_URL
+              value: postgresql://postgres:$(POSTGRES_PASSWORD)@postgres:5432/pipeline
+            - name: S3_ENDPOINT_URL
+              value: http://seaweedfs:8333
+            - name: S3_BUCKET
+              value: transactions
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: pipeline-secrets
+                  key: S3_ACCESS_KEY
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: pipeline-secrets
+                  key: S3_SECRET_KEY
+    

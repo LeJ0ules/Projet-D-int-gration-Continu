@@ -1,0 +1,45 @@
+# Traitement récurrent : toutes les 5 minutes, traite les nouveaux fichiers du bucket.
+# Grâce au hash en base, un fichier déjà traité est ignoré : relancer le job est sans danger.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pipeline-process
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid        # jamais deux exécutions en même temps
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2              # Kubernetes relance le pod jusqu'à 2 fois s'il échoue
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: pipeline
+              image: data-pipeline:deploy
+              imagePullPolicy: IfNotPresent
+              command: ["python", "-m", "src.pipeline", "--mode", "process"]
+              env:
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: pipeline-secrets
+                      key: POSTGRES_PASSWORD
+                # $(POSTGRES_PASSWORD) : Kubernetes remplace par la variable définie juste au-dessus.
+                - name: DATABASE_URL
+                  value: postgresql://postgres:$(POSTGRES_PASSWORD)@postgres:5432/pipeline
+                - name: S3_ENDPOINT_URL
+                  value: http://seaweedfs:8333
+                - name: S3_BUCKET
+                  value: transactions
+                - name: S3_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: pipeline-secrets
+                      key: S3_ACCESS_KEY
+                - name: S3_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: pipeline-secrets
+                      key: S3_SECRET_KEY
