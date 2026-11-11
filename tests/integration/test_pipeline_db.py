@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from src.generate import IBAN_A, IBAN_B, IBAN_C, IBAN_D, IBAN_E
 from src.pipeline import run
+from src.s3 import PREFIX, make_client
 
 F1 = "transactions_001.csv"
 F2 = "transactions_002.csv"
@@ -33,14 +34,14 @@ def flagged_amounts(conn, file_name: str) -> list[Decimal]:
     return [r[0] for r in rows]
 
 
-def test_row_counts(conn, database_url, tmp_path):
-    run(database_url, tmp_path)
+def test_row_counts(conn, database_url, s3_settings):
+    run(database_url, s3_settings)
     assert conn.execute("SELECT count(*) FROM processed_files").fetchone()[0] == 2
     assert conn.execute("SELECT count(*) FROM transactions").fetchone()[0] == 12  # 7 + 5
 
 
-def test_sums_file_1(conn, database_url, tmp_path):
-    run(database_url, tmp_path)
+def test_sums_file_1(conn, database_url, s3_settings):
+    run(database_url, s3_settings)
     assert sums(conn, "sum_sent_by_iban", "iban", F1) == {
         IBAN_A: d("14000.50"),
         IBAN_B: d("10000.01"),
@@ -62,8 +63,8 @@ def test_sums_file_1(conn, database_url, tmp_path):
     }
 
 
-def test_sums_file_2(conn, database_url, tmp_path):
-    run(database_url, tmp_path)
+def test_sums_file_2(conn, database_url, s3_settings):
+    run(database_url, s3_settings)
     assert sums(conn, "sum_sent_by_iban", "iban", F2) == {
         IBAN_E: d("300.00"),
         IBAN_C: d("7500.00"),
@@ -79,8 +80,8 @@ def test_sums_file_2(conn, database_url, tmp_path):
     }
 
 
-def test_flags(conn, database_url, tmp_path):
-    run(database_url, tmp_path)
+def test_flags(conn, database_url, s3_settings):
+    run(database_url, s3_settings)
     assert flagged_amounts(conn, F1) == [d("5000.01"), d("12000.00")]
     assert flagged_amounts(conn, F2) == [d("7500.00")]
     # Cas limite : 5000.00 pile n'est PAS flaggé.
@@ -88,17 +89,19 @@ def test_flags(conn, database_url, tmp_path):
     assert row[0] is False
 
 
-def test_second_run_does_not_reprocess(conn, database_url, tmp_path):
-    run(database_url, tmp_path)
-    second = run(database_url, tmp_path)
+def test_second_run_does_not_reprocess(conn, database_url, s3_settings):
+    run(database_url, s3_settings)
+    second = run(database_url, s3_settings)
     assert second.processed == []
     assert sorted(second.skipped) == [F1, F2]
     assert conn.execute("SELECT count(*) FROM transactions").fetchone()[0] == 12
 
 
-def test_renamed_copy_is_not_reprocessed(conn, database_url, tmp_path):
-    run(database_url, tmp_path)
-    (tmp_path / "copie.csv").write_bytes((tmp_path / F1).read_bytes())
-    second = run(database_url, tmp_path)
+def test_renamed_copy_is_not_reprocessed(conn, database_url, s3_settings):
+    run(database_url, s3_settings)
+    client = make_client(s3_settings)
+    original = client.get_object(Bucket=s3_settings.bucket, Key=f"{PREFIX}{F1}")["Body"].read()
+    client.put_object(Bucket=s3_settings.bucket, Key=f"{PREFIX}copie.csv", Body=original)
+    second = run(database_url, s3_settings)
     assert "copie.csv" in second.skipped
     assert conn.execute("SELECT count(*) FROM transactions").fetchone()[0] == 12

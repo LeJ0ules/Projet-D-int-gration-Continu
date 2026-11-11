@@ -8,21 +8,31 @@ from pathlib import Path
 from src.models import Transaction
 
 
+def parse_transactions(content: bytes) -> list[Transaction]:
+    """Convertit le contenu d'un CSV (octets) en Transaction typées. Pure : aucun accès disque."""
+    lines = content.decode("utf-8").splitlines()
+    return [
+        Transaction(
+            datetime_transaction=datetime.fromisoformat(row["datetime_transaction"]),
+            iban_origine=row["iban_origine"],
+            pays_source=row["pays_source"],
+            banque_source=row["banque_source"],
+            iban_destinataire=row["iban_destinataire"],
+            pays_destinataire=row["pays_destinataire"],
+            montant_eur=Decimal(row["montant_eur"]),
+        )
+        for row in csv.DictReader(lines)
+    ]
+
+
 def load_transactions(path: Path) -> list[Transaction]:
-    """Lit un CSV et renvoie des Transaction typées (datetime, Decimal)."""
-    with path.open(newline="", encoding="utf-8") as f:
-        return [
-            Transaction(
-                datetime_transaction=datetime.fromisoformat(row["datetime_transaction"]),
-                iban_origine=row["iban_origine"],
-                pays_source=row["pays_source"],
-                banque_source=row["banque_source"],
-                iban_destinataire=row["iban_destinataire"],
-                pays_destinataire=row["pays_destinataire"],
-                montant_eur=Decimal(row["montant_eur"]),
-            )
-            for row in csv.DictReader(f)
-        ]
+    """Lit un CSV local et renvoie des Transaction typées (datetime, Decimal)."""
+    return parse_transactions(path.read_bytes())
+
+
+def sha256_bytes(content: bytes) -> str:
+    """Empreinte SHA-256 d'un contenu : sert à repérer un fichier déjà traité."""
+    return hashlib.sha256(content).hexdigest()
 
 
 def file_sha256(path: Path) -> str:

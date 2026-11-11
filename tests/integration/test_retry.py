@@ -16,7 +16,7 @@ def count(conn, table: str) -> int:
     return conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
 
 
-def test_retry_recovers_from_transient_failures(conn, database_url, tmp_path, monkeypatch):
+def test_retry_recovers_from_transient_failures(conn, database_url, s3_settings, monkeypatch):
     calls = []
 
     def flaky(*args, **kwargs):
@@ -26,14 +26,16 @@ def test_retry_recovers_from_transient_failures(conn, database_url, tmp_path, mo
         return REAL_INSERT(*args, **kwargs)
 
     monkeypatch.setattr(db, "insert_result", flaky)
-    summary = run(database_url, tmp_path, attempts=3, wait_seconds=0)
+    summary = run(database_url, s3_settings, attempts=3, wait_seconds=0)
 
     assert len(summary.processed) == 2
     assert len(calls) == 4  # fichier 1 : 3 essais (2 échecs + 1 succès), fichier 2 : 1 essai
     assert count(conn, "transactions") == 12  # aucune donnée en double
 
 
-def test_gives_up_after_max_attempts_and_leaves_db_clean(conn, database_url, tmp_path, monkeypatch):
+def test_gives_up_after_max_attempts_and_leaves_db_clean(
+    conn, database_url, s3_settings, monkeypatch
+):
     calls = []
 
     def always_failing(*args, **kwargs):
@@ -42,7 +44,7 @@ def test_gives_up_after_max_attempts_and_leaves_db_clean(conn, database_url, tmp
 
     monkeypatch.setattr(db, "insert_result", always_failing)
     with pytest.raises(psycopg.OperationalError):
-        run(database_url, tmp_path, attempts=3, wait_seconds=0)
+        run(database_url, s3_settings, attempts=3, wait_seconds=0)
 
     assert len(calls) == 3
     assert count(conn, "processed_files") == 0  # rien d'enregistré
@@ -50,12 +52,12 @@ def test_gives_up_after_max_attempts_and_leaves_db_clean(conn, database_url, tmp
 
     # La base redevient disponible : un nouveau lancement traite normalement les fichiers.
     monkeypatch.undo()
-    summary = run(database_url, tmp_path, wait_seconds=0)
+    summary = run(database_url, s3_settings, wait_seconds=0)
     assert len(summary.processed) == 2
     assert count(conn, "transactions") == 12
 
 
-def test_retry_after_lost_ack_does_not_duplicate(conn, database_url, tmp_path, monkeypatch):
+def test_retry_after_lost_ack_does_not_duplicate(conn, database_url, s3_settings, monkeypatch):
     """Pire cas : l'insertion RÉUSSIT mais la réponse se perd (erreur côté client).
     Le retry retombe sur un fichier déjà enregistré : il doit être ignoré, pas dupliqué."""
     state = {"first": True}
@@ -67,7 +69,7 @@ def test_retry_after_lost_ack_does_not_duplicate(conn, database_url, tmp_path, m
             raise psycopg.OperationalError("réponse perdue après commit (simulée)")
 
     monkeypatch.setattr(db, "insert_result", commit_then_error)
-    summary = run(database_url, tmp_path, attempts=3, wait_seconds=0)
+    summary = run(database_url, s3_settings, attempts=3, wait_seconds=0)
 
     assert summary.skipped == ["transactions_001.csv"]
     assert summary.processed == ["transactions_002.csv"]

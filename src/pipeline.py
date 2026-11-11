@@ -1,18 +1,21 @@
-"""Orchestration : génère les CSV, les traite, les insère en base.
+"""Orchestration : génère les CSV, les dépose dans S3, les récupère, les traite, les insère.
 
 Ce fichier ne contient pas de logique métier : il enchaîne les briques
-(generate -> loaders -> transforms -> db) dans le bon ordre.
+(generate -> s3 -> loaders -> transforms -> db) dans le bon ordre.
 """
 import logging
 import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import psycopg
 
-from src import db
+from src import db, s3
 from src.generate import generate_all
-from src.loaders import file_sha256, load_transactions
+from src.loaders import parse_transactions, sha256_bytes
+from src.s3 import PREFIX, S3Settings
 from src.transforms import process
 
 
@@ -22,51 +25,63 @@ class RunSummary:
     skipped: list[str] = field(default_factory=list)
 
 
-def process_directory(
-    database_url: str, data_dir: Path, *, attempts: int = 3, wait_seconds: float = 1.0
+def upload_generated_files(client: Any, bucket: str, **retry: Any) -> list[str]:
+    """Génère les CSV dans un dossier temporaire puis les dépose dans le bucket."""
+    keys = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for path in generate_all(Path(tmp)):
+            key = f"{PREFIX}{path.name}"
+            s3.upload_file(client, bucket, path, key, **retry)
+            keys.append(key)
+    return keys
+
+
+def process_bucket(
+    database_url: str, client: Any, bucket: str, *, attempts: int = 3, wait_seconds: float = 1.0
 ) -> RunSummary:
-    """Traite chaque CSV du dossier, sauf ceux déjà traités (repérés par leur hash)."""
+    """Traite chaque CSV du bucket, sauf ceux déjà traités (repérés par leur hash)."""
+    retry = {"attempts": attempts, "wait_seconds": wait_seconds}
     summary = RunSummary()
-    for path in sorted(data_dir.glob("*.csv")):
-        file_hash = file_sha256(path)
+    for key in s3.list_csv_keys(client, bucket, **retry):
+        name = key.removeprefix(PREFIX)
+        content = s3.download_bytes(client, bucket, key, **retry)  # avec retry
+        file_hash = sha256_bytes(content)
         with db.connect(database_url) as conn:
             already_done = db.is_file_processed(conn, file_hash)
         if already_done:
-            summary.skipped.append(path.name)
+            summary.skipped.append(name)
             continue
-        result = process(load_transactions(path))
+        result = process(parse_transactions(content))
         try:
-            db.insert_result_with_retry(
-                database_url,
-                file_hash,
-                path.name,
-                result,
-                attempts=attempts,
-                wait_seconds=wait_seconds,
-            )
+            db.insert_result_with_retry(database_url, file_hash, name, result, **retry)
         except psycopg.errors.UniqueViolation:
             # Fichier déjà enregistré : soit un autre process l'a inséré entre-temps,
             # soit un essai précédent avait réussi mais sa réponse s'est perdue.
-            summary.skipped.append(path.name)
+            summary.skipped.append(name)
             continue
-        summary.processed.append(path.name)
+        summary.processed.append(name)
     return summary
 
 
 def run(
-    database_url: str, data_dir: Path, *, attempts: int = 3, wait_seconds: float = 1.0
+    database_url: str,
+    s3_settings: S3Settings,
+    *,
+    attempts: int = 3,
+    wait_seconds: float = 1.0,
 ) -> RunSummary:
-    generate_all(data_dir)
+    retry = {"attempts": attempts, "wait_seconds": wait_seconds}
+    client = s3.make_client(s3_settings)
+    s3.ensure_bucket(client, s3_settings.bucket, **retry)
+    upload_generated_files(client, s3_settings.bucket, **retry)
     with db.connect(database_url) as conn:
         db.init_schema(conn)
-    return process_directory(database_url, data_dir, attempts=attempts, wait_seconds=wait_seconds)
+    return process_bucket(database_url, client, s3_settings.bucket, **retry)
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    database_url = os.environ["DATABASE_URL"]
-    data_dir = Path(os.environ.get("DATA_DIR", "data/incoming"))
-    summary = run(database_url, data_dir)
+    summary = run(os.environ["DATABASE_URL"], S3Settings.from_env())
     print(f"traités : {summary.processed}")
     print(f"ignorés (déjà traités) : {summary.skipped}")
 
