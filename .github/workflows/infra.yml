@@ -1,0 +1,34 @@
+name: Infra (OpenTofu)
+
+# Vérifie la configuration OpenTofu sans toucher au cloud : aucun identifiant nécessaire.
+on:
+  push:
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra.yml"
+  pull_request:
+    paths:
+      - "infra/**"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.13.9
+
+      - name: Format
+        run: tofu fmt -check -recursive
+
+      # -backend=false : pas d'état distant, on veut seulement télécharger les providers.
+      - name: Initialisation
+        run: tofu init -backend=false -input=false
+
+      - name: Validation
+        run: tofu validate

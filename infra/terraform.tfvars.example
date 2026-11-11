@@ -1,0 +1,5 @@
+# Copier ce fichier en terraform.tfvars et le compléter (terraform.tfvars est ignoré par git).
+project_id  = "00000000-0000-0000-0000-000000000000"
+bucket_name = "tp-pipeline-votrenom-2026"
+# Le mot de passe se passe plutôt par l'environnement :
+#   export TF_VAR_db_password='...'

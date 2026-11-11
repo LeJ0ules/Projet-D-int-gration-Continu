@@ -32,6 +32,8 @@ flowchart LR
 | `k8s/` | Manifests Kubernetes (PostgreSQL, SeaweedFS, CronJob) |
 | `.github/workflows/ci.yml` | CI : lint, tests unitaires, pipeline, tests d'intégration, build Docker |
 | `.github/workflows/cd.yml` | CD : déploiement sur un cluster kind éphémère, vérification, publication |
+| `infra/` | OpenTofu : infrastructure cloud (Kubernetes managé, PostgreSQL managé, S3) sur Scaleway |
+| `.github/workflows/infra.yml` | Vérifie la configuration OpenTofu (format, validation) |
 
 ## Format des données
 
@@ -128,6 +130,42 @@ Déclenchée quand la CI est verte sur `main` (ou manuellement) :
 
 Le CronJob (`--mode process`, toutes les 5 minutes) ne génère jamais de données : il traite
 seulement les nouveaux fichiers du bucket.
+
+## Infrastructure as code (OpenTofu)
+
+Le dossier `infra/` décrit l'infrastructure de production dans le cloud (Scaleway, région de
+Paris), au lieu de la créer à la main :
+
+| Fichier | Ressources |
+|---|---|
+| `network.tf` | Réseau privé partagé entre le cluster et la base |
+| `kubernetes.tf` | Cluster Kubernetes managé (Kapsule) et son pool de noeuds |
+| `database.tf` | PostgreSQL 16 managé, base `pipeline` (accessible uniquement par le réseau privé) |
+| `storage.tf` | Bucket S3, identité IAM dédiée à la pipeline et sa clé d'accès |
+| `outputs.tf` | Valeurs à injecter : `DATABASE_URL`, `S3_ENDPOINT_URL`, `S3_BUCKET`, clés S3, kubeconfig |
+
+**État d'avancement : la configuration est validée mais n'a jamais été appliquée** (pas de
+compte cloud). `tofu fmt` et `tofu validate` passent avec le vrai schéma du provider, et la
+CI (`infra.yml`) les rejoue à chaque modification, sans identifiants. Le comportement réel
+(valeurs des types de machines, droits IAM, coûts) n'a donc pas été vérifié sur le cloud.
+
+Utilisation prévue :
+
+```bash
+cd infra
+export SCW_ACCESS_KEY=... SCW_SECRET_KEY=...   # identifiants Scaleway
+export TF_VAR_db_password='un-mot-de-passe-long'
+cp terraform.tfvars.example terraform.tfvars   # puis le compléter
+tofu init && tofu plan
+tofu apply
+tofu destroy                                   # à ne pas oublier : ces services sont payants
+```
+
+Le fichier d'état (`terraform.tfstate`) contient des secrets : il ne doit jamais être commité.
+Le code de la pipeline n'a pas à changer : en production, PostgreSQL et SeaweedFS du cluster
+sont remplacés par la base et le S3 managés, et la pipeline les rejoint via ses variables
+d'environnement. Le déploiement du CronJob sur ce cluster (Secret créé à partir des sorties
+OpenTofu) reste à écrire.
 
 ## Limites et pistes d'amélioration
 
